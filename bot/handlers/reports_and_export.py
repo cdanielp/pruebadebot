@@ -85,6 +85,14 @@ async def cmd_resumen_semana(message: types.Message):
 
     async with AsyncSessionLocal() as session:
         data = await ReportService.weekly_summary(session, group_db_id)
+        # Resolver nombres
+        from bot.models.domain import User
+        from sqlalchemy import select as sel
+        payer_ids = list(data["by_payer"].keys())
+        names = {}
+        if payer_ids:
+            res = await session.execute(sel(User.id, User.display_name).where(User.id.in_(payer_ids)))
+            names = {r.id: r.display_name or f"#{r.id}" for r in res.all()}
 
     lines = ["📊 *Resumen de la semana*\n"]
     lines.append(f"💰 *Total gastado:* ${data['total_spent']:.2f}\n")
@@ -97,12 +105,13 @@ async def cmd_resumen_semana(message: types.Message):
     if data["by_payer"]:
         lines.append("\n👤 *Pagado por cada uno:*")
         for uid, total in data["by_payer"].items():
-            lines.append(f"  • Usuario `{uid}`: ${total:.2f}")
+            lines.append(f"  • {names.get(uid, uid)}: ${total:.2f}")
 
     b = data["balance"]
     if "debts" in b and b["debts"]:
         d = b["debts"][0]
-        lines.append(f"\n⚖️ *Balance:* `{d['from_user']}` debe ${d['amount']:.2f}")
+        fn = names.get(d['from_user'], d['from_user'])
+        lines.append(f"\n⚖️ *Balance:* {fn} debe ${d['amount']:.2f}")
     elif "error" not in b:
         lines.append("\n⚖️ *Balance:* ¡Están al día! ✅")
 

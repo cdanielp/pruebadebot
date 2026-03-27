@@ -44,39 +44,31 @@ class BalanceService:
         payments_res = await session.execute(payments_stmt)
         payments = {row.paid_by_user_id: Decimal(str(row.total_paid)) for row in payments_res.all()}
 
-        # 3. Compensaciones ya realizadas (reducen la deuda)
-        settlements_from_stmt = (
-            select(Settlement.from_user_id, func.sum(Settlement.amount).label("total_sent"))
-            .where(Settlement.group_id == group_id)
-            .group_by(Settlement.from_user_id)
-        )
-        settlements_to_stmt = (
-            select(Settlement.to_user_id, func.sum(Settlement.amount).label("total_received"))
-            .where(Settlement.group_id == group_id)
-            .group_by(Settlement.to_user_id)
-        )
-        sent_res = await session.execute(settlements_from_stmt)
-        recv_res = await session.execute(settlements_to_stmt)
-
-        sent = {row.from_user_id: Decimal(str(row.total_sent)) for row in sent_res.all()}
-        received = {row.to_user_id: Decimal(str(row.total_received)) for row in recv_res.all()}
-
-        # 4. Calcular balance neto por usuario
-        # balance_neto = lo_que_pago_en_gastos + lo_que_recibio_en_compensaciones - lo_que_envio_en_compensaciones
-        # Si balance_neto > target_per_user => le deben
-        # Si balance_neto < target_per_user => debe
-
-        totals = {}
-        for uid in members:
-            paid = payments.get(uid, Decimal("0"))
-            recv = received.get(uid, Decimal("0"))
-            snt = sent.get(uid, Decimal("0"))
-            totals[uid] = paid + recv - snt
-
+        # 3. Calcular balance neto solo con gastos primero
         total_shared = sum(payments.values())
         target_per_user = total_shared / Decimal(str(len(members)))
 
-        net_balances = {uid: totals[uid] - target_per_user for uid in members}
+        # balance_from_expenses: positivo = pagó de más, negativo = pagó de menos
+        expense_balances = {
+            uid: payments.get(uid, Decimal("0")) - target_per_user
+            for uid in members
+        }
+
+        # 4. Compensaciones ya realizadas (reducen la deuda pendiente)
+        settlements_stmt = (
+            select(Settlement.from_user_id, Settlement.to_user_id, Settlement.amount)
+            .where(Settlement.group_id == group_id)
+        )
+        settlements_res = await session.execute(settlements_stmt)
+        settlements_list = settlements_res.all()
+
+        # Ajustar balances: si from_user pagó a to_user, from_user ya compensó parte
+        net_balances = dict(expense_balances)
+        for row in settlements_list:
+            net_balances[row.from_user_id] = net_balances.get(row.from_user_id, Decimal("0")) + Decimal(str(row.amount))
+            net_balances[row.to_user_id] = net_balances.get(row.to_user_id, Decimal("0")) - Decimal(str(row.amount))
+
+        totals = {uid: payments.get(uid, Decimal("0")) for uid in members}
 
         # 5. Simplificar deudas (para 2 personas es trivial, para N usa algoritmo de simplificación)
         debts = BalanceService._simplify_debts(net_balances)

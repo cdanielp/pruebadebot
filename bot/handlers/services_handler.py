@@ -122,13 +122,40 @@ async def cmd_pagado(message: types.Message):
 
         svc, payment = await ServiceManager.mark_paid(session, group_db_id, name, amount, user_db_id)
 
+        # Si el servicio es compartido, registrar como gasto compartido para que afecte el balance
+        balance_txt = ""
+        if svc and svc.shared:
+            from bot.services.expense_service import ExpenseService
+            from bot.services.balance_service import BalanceService
+            await ExpenseService.create_expense(
+                session=session,
+                group_id=group_db_id,
+                creator_id=user_db_id,
+                payer_id=user_db_id,
+                amount=amount,
+                category="servicios",
+                description=f"Pago de {svc.name}",
+                shared=True,
+            )
+            try:
+                b = await BalanceService.calculate_balance(session, group_db_id)
+                if "debts" in b and b["debts"]:
+                    d = b["debts"][0]
+                    balance_txt = f"\n⚖️ *Balance:* debe ${d['amount']:.2f} para cuadrar."
+                elif "error" not in b:
+                    balance_txt = "\n⚖️ *Balance:* Están al día ✅"
+            except Exception:
+                pass
+
     if not svc:
         return await message.reply(f"⚠️ No encontré el servicio *{name}*.", parse_mode="Markdown")
 
+    shared_txt = "\n👫 Registrado como gasto compartido." if svc.shared else ""
     await message.reply(
         f"✅ *{svc.name}* marcado como pagado\n"
         f"💰 Monto: ${amount:.2f}\n"
-        f"📅 Fecha: {payment.paid_date.strftime('%d/%m/%Y')}",
+        f"📅 Fecha: {payment.paid_date.strftime('%d/%m/%Y')}"
+        f"{shared_txt}{balance_txt}",
         parse_mode="Markdown",
     )
 
